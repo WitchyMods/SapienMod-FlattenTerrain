@@ -3,7 +3,7 @@ local modInfo = {
   description = "Allows you to flatten the terrain!",
   type = "world",
   developer = "Witchy",
-  version = "1.0.0",
+  version = "1.0.1",
   preview = "preview.png"
 }
 return modInfo

@@ -40,8 +40,15 @@ end
 
 local function override_removeAllPlanStatesForObject()
     local super = planManager.removeAllPlanStatesForObject
-    planManager.removeAllPlanStatesForObject = function(planManager_, planObject, sharedState, tribeIDOrNilForAll)
-        mod:removeAllPlanStatesForObject(super, planObject, sharedState, tribeIDOrNilForAll)
+    planManager.removeAllPlanStatesForObject = function(planManager_, planObject, sharedState, tribeIDOrNilForAll, isForCancel)
+        mod:removeAllPlanStatesForObject(super, planObject, sharedState, tribeIDOrNilForAll, isForCancel)
+    end
+end
+
+local function override_cancelAllPlansForObject()
+    local super = planManager.cancelAllPlansForObject
+    planManager.cancelAllPlansForObject = function(planManager_, tribeID, objectID)
+        mod:cancelAllPlansForObject(super, tribeID, objectID)
     end
 end
 
@@ -67,6 +74,7 @@ function mod:onload(planManager_)
     override_cancelPlans()
     override_removePlanStateFromTerrainVertForTerrainModification()
     override_removeAllPlanStatesForObject()
+    override_cancelAllPlansForObject()
     override_prioritizePlans()
     override_deprioritizePlans()
 end
@@ -121,6 +129,11 @@ local function updateFlattenPlanForBaseVertex(baseVertID, tribeID, vertIDToRemov
     if not planObject then return end
 
     local objectState = planObject.sharedState
+
+    if not objectState.flattenSettings then -- shouldn't happen but will prevent crashes
+        return
+    end
+
     local affectedVertIDs = objectState.flattenSettings.affectedVertIDs
     
     for index, vertID in ipairs(affectedVertIDs) do
@@ -145,11 +158,17 @@ local function updateVertexForFlattenPlan(vertID, tribeID, baseVertID)
 
     local flattenSettings = baseVertPlanObject.sharedState.flattenSettings
 
+    local objectState = vert.planObject.sharedState
+
+    if not flattenSettings then -- for some reason the flatten plan was removed but this child vertex still contains flags
+        objectState:remove("flattenPlanBaseVertID")
+        return
+    end
+
     local altitude = getAltitude(vert.vertInfo)
 
     -- if now at the correct altitude, we update the parent
     if altitude == flattenSettings.targetAltitude then
-        local objectState = vert.planObject.sharedState
         objectState:remove("flattenPlanBaseVertID")
         updateFlattenPlanForBaseVertex(baseVertID, tribeID, vertID)
     else
@@ -181,12 +200,18 @@ local function updateVertexForFlattenPlan(vertID, tribeID, baseVertID)
         local userData = {
             planTypeIndex = planTypeIndexToAdd,
             objectOrVertIDs = {vertID},
+            baseVertID = {vertID},
             constructableTypeIndex = constructableTypeIndex, 
             restrictedResourceObjectTypes = restrictedResourceObjectTypes, 
             restrictedToolObjectTypes = restrictedToolObjectTypes,
         }
 
-        planManager:addPlans(tribeID, userData)            
+        local existingPlan = planManager:getPlanStateForObject(vert.planObject, planTypeIndexToAdd, nil, nil, tribeID, nil)
+
+        if not existingPlan then
+            --mj:log("updateVertexForFlattenPlan, adding plan for: ", vertID)
+            planManager:addPlans(tribeID, userData)      
+        end
     end
 end
 
@@ -197,6 +222,8 @@ function mod:init(super, serverGOM_, serverWorld_, serverSapien_, serverCraftAre
 end
 
 function mod:addPlans(super, tribeID, userData)
+    --mj:log("Adding plans:", userData)
+
     if userData.planTypeIndex == plan.types.flatten.index then
         if userData then
             local baseVertInfo = terrain:retrieveVertInfo(userData.baseVertID)
@@ -269,7 +296,7 @@ function mod:addPlans(super, tribeID, userData)
             for planStateIndex, planState in ipairs(baseVertObjectState.planStates[tribeID]) do
                 if planState.planTypeIndex == plan.types.flatten.index then
                     baseVertObjectState:set("planStates", tribeID, planStateIndex, "isFlattenPlanBaseVert", true) -- can't complete reason
-                    baseVertObjectState:set("planStates", tribeID, planStateIndex, "canComplete", false) -- mark is as can't complete so the sapiens don't do anyting to it
+                    baseVertObjectState:set("planStates", tribeID, planStateIndex, "canComplete", false) -- mark it as can't complete so the sapiens don't do anyting to it
                 end
             end
         end
@@ -279,6 +306,7 @@ function mod:addPlans(super, tribeID, userData)
 end
 
 function mod:cancelPlans(super, tribeID, userData)
+    --mj:log("cancelPlans ", userData)
     if userData then
         local planTypeIndex = userData.planTypeIndex
         if userData.objectOrVertIDs and ( planTypeIndex == plan.types.dig.index or planTypeIndex == plan.types.mine.index or planTypeIndex == plan.types.fill.index) then
@@ -340,14 +368,16 @@ local function checkFlattenPlanPriority(baseVertObject, tribeID)
     end
 end
 
-local function cancelOrCompletePlansForFlattening(planObject, objectState, tribeID)
+local function cancelOrCompletePlansForFlattening(planObject, objectState, tribeID, isForCancel)
+    --mj:log("cancelOrCompletePlansForFlattening for: ", objectState.vertID)
+
     local baseVertID = objectState.flattenPlanBaseVertID 
 
     if baseVertID then 
         local baseVertObject = getPlanObjectForVertID(baseVertID, tribeID)
         local vertID = objectState.vertID
 
-        if not objectState.flattenActionCompleted then
+        if isForCancel then
             objectState:remove("flattenPlanBaseVertID")
             updateFlattenPlanForBaseVertex(baseVertID, tribeID, vertID)                
         else
@@ -356,18 +386,19 @@ local function cancelOrCompletePlansForFlattening(planObject, objectState, tribe
         end
     end
 
-    if objectState.flattenActionCompleted then
+    if objectState.flattenActionCompleted then --old flag I was using in version 1.0.0
         objectState:remove("flattenActionCompleted")
     end
 
     if objectState.flattenSettings then
         local lastChildVertID = nil
-        while objectState.flattenSettings and #objectState.flattenSettings.affectedVertIDs ~= 0 do
-            local childVertID = objectState.flattenSettings.affectedVertIDs[1]
+        local index = 1
+        while objectState.flattenSettings and objectState.flattenSettings.affectedVertIDs[index] do
+            local childVertID = objectState.flattenSettings.affectedVertIDs[index]
 
             if lastChildVertID == childVertID then
-                mj:error("Stuck in infinite loop, Exiting")
-                error()
+                mj:warn("Stuck in infinite loop")
+                index = index + 1 -- we skip the vertices we couldn't remove for some reason
             end
 
             lastChildVertID = childVertID
@@ -379,27 +410,46 @@ local function cancelOrCompletePlansForFlattening(planObject, objectState, tribe
 end
 
 function mod:removePlanStateFromTerrainVertForTerrainModification(super, objectOrVertID, planTypeIndex, tribeID, researchTypeIndex, isForCancel)
+    --mj:log("removePlanStateFromTerrainVertForTerrainModification for: ", objectOrVertID, " isForCancel: ", isForCancel)
     local planObject = getPlanObjectForVertID(objectOrVertID, tribeID)
     local objectState = planObject.sharedState
 
-    -- little hack because all functions to remove plans have no indication if it's because it was "cancelled" or "completed"
-    -- and there's just way too many paths by which a plan can be removed to cover them all with overrides
-    if not isForCancel and objectState.flattenPlanBaseVertID then
-        objectState:set("flattenActionCompleted", true)
-    end
+    super(planManager, objectOrVertID, planTypeIndex, tribeID, researchTypeIndex)
 
-    super(base, objectOrVertID, planTypeIndex, tribeID, researchTypeIndex)
-
-    cancelOrCompletePlansForFlattening(planObject, objectState, tribeID)
+    cancelOrCompletePlansForFlattening(planObject, objectState, tribeID, isForCancel)
 end
 
-function mod:removeAllPlanStatesForObject(super, planObject, sharedState, tribeIDOrNilForAll)
+function mod:removeAllPlanStatesForObject(super, planObject, sharedState, tribeIDOrNilForAll, isForCancel)
+    --mj:log("removeAllPlanStatesForObject for: ", sharedState.vertID, " isForCancel: ", isForCancel)
     super(planManager, planObject, sharedState, tribeIDOrNilForAll)
 
-    --the super for removePlanStateFromTerrainVertForTerrainModification calls removeAllPlanStatesForObject so check so we don't cancel or complete twice'
-    if not sharedState.flattenActionCompleted then
-        cancelOrCompletePlansForFlattening(planObject, sharedState, tribeIDOrNilForAll)
+    if isForCancel then -- removePlanStateFromTerrainVertForTerrainModification already calls it
+        cancelOrCompletePlansForFlattening(planObject, sharedState, tribeIDOrNilForAll, isForCancel)
     end
+end
+
+function mod:cancelAllPlansForObject(super, tribeID, objectID)
+    --mj:log("cancelAllPlansForObject")
+    local object = serverGOM:getObjectWithID(objectID)
+    if object then
+        local sharedState = object.sharedState
+        local planStatesByTribeID = sharedState.planStates
+        if planStatesByTribeID then
+            local allRemovedPlanTypeIndexes = {}
+            local planStates = planStatesByTribeID[tribeID]
+            for i,thisPlanState in ipairs(planStates) do
+                table.insert(allRemovedPlanTypeIndexes, thisPlanState.planTypeIndex)
+            end
+
+            planManager:removeAllPlanStatesForObject(object, object.sharedState, tribeID, true)
+                
+            for i,planTypeIndex in ipairs(allRemovedPlanTypeIndexes) do
+                serverGOM:planWasCancelledForObject(object, planTypeIndex, tribeID)
+            end
+        end
+    end
+
+    super(self, tribeID, objectID) -- we call the super so it calls its local function updatePlansForFollowerOrOrderCountChange
 end
 
 local function updatePriorityForFlattenPlan(super, tribeID, userData)
