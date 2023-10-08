@@ -6,7 +6,9 @@ local uiCommon = mjrequire "mainThread/ui/uiCommon/uiCommon"
 local audio = mjrequire "mainThread/audio"
 local logicInterface = mjrequire "mainThread/logicInterface"
 
-local mod = {}
+local mod = {
+    loadOrder = 999
+}
 
 local actionUI = nil
 local world = nil
@@ -29,11 +31,23 @@ local function override_show()
     end
 end
 
+local function override_displayWheelPage()
+    local super = actionUI.displayWheelPage
+
+    if super then
+        actionUI.displayWheelPage = 
+        function(actionUI_, ...)
+            mod:displayWheelPage(super, ...)
+        end
+    end
+end
+
 function mod:onload(actionUI_)
     actionUI = actionUI_
 
     override_init()
     override_show()
+    override_displayWheelPage()
 end
 
 local function onFlattenClick(planInfo)
@@ -128,6 +142,11 @@ function mod:show(super)
         updateButtons()
         registerStateChanges()
     end
+end
+
+function mod:displayWheelPage(super, ...)
+    super(actionUI, ...)
+    updateButtons()
 end
 
 return mod
