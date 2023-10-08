@@ -334,18 +334,14 @@ local function checkFlattenPlanPriority(baseVertObject, tribeID)
     local flattenPlanState = planManager:getPlanStateForObject(baseVertObject, plan.types.flatten.index, nil, nil, tribeID, nil)
 
     if flattenPlanState and flattenPlanState.manuallyPrioritized then
-        local nonPrioritzedCount = 0 
         local IDsToPrioritize = {}
 
         for i, vertID in ipairs(baseVertObject.sharedState.flattenSettings.affectedVertIDs) do
-            local isPrioritized = false
             local planObject = getPlanObjectForVertID(vertID)
 
             if planObject.sharedState.planStates and planObject.sharedState.planStates[tribeID] then
                 for k, planState in ipairs(planObject.sharedState.planStates[tribeID]) do
-                    if planState.manuallyPrioritized then
-                        isPrioritized = true
-                    else
+                    if not planState.manuallyPrioritized then
                         if not IDsToPrioritize[planState.planTypeIndex] then
                             IDsToPrioritize[planState.planTypeIndex] = {}
                         end
@@ -353,17 +349,11 @@ local function checkFlattenPlanPriority(baseVertObject, tribeID)
                         table.insert(IDsToPrioritize[planState.planTypeIndex], vertID)
                     end
                 end
-
-                if not isPrioritized then
-                    nonPrioritzedCount = nonPrioritzedCount + 1
-                end
             end
         end
 
-        if nonPrioritzedCount == #baseVertObject.sharedState.flattenSettings.affectedVertIDs then
-            for planTypeIndex, vertIDs in pairs(IDsToPrioritize) do
-                planManager:prioritizePlans(tribeID, { planTypeIndex = planTypeIndex, objectOrVertIDs = vertIDs})
-            end
+        for planTypeIndex, vertIDs in pairs(IDsToPrioritize) do
+            planManager:prioritizePlans(tribeID, { planTypeIndex = planTypeIndex, objectOrVertIDs = vertIDs})
         end
     end
 end
